@@ -1,0 +1,30 @@
+name: Update ECS Task Definition
+
+on:
+  workflow_run:
+    workflows: ["Ticket99 API Build and Push"]
+    types:
+      - completed
+
+jobs:
+  update-ecs-task:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: "ap-south-2"
+
+      - name: Download Existing ECS Task Definition
+        run: |
+          aws ecs describe-task-definition --task-definition ticket99-staging-api > existing-task-definition.json
+          cat existing-task-definition.json  # Print the content for verification
+
+      # Additional steps to update ECS task definition using Terraform or other methods
+      # ...

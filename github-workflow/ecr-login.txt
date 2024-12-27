@@ -1,0 +1,7 @@
+#########  ECR command #########
+
+aws ecr get-login-password --region eu-west-1 | docker login --username AWS --password-stdin 612409389634.dkr.ecr.eu-west-1.amazonaws.com
+docker tag graphql-server:latest 612409389634.dkr.ecr.eu-west-1.amazonaws.com/graphql:graphql-server
+docker push 612409389634.dkr.ecr.eu-west-1.amazonaws.com/graphql:graphql-server
+
+

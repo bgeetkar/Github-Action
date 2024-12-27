@@ -1,0 +1,112 @@
+name: Ticket99 API Build and Deploy on ECS
+
+on:
+  push:
+    branches:
+      - create-dockerfile-and-deploy-on-ecr
+      - staging
+      - master
+
+env:
+  ECR_REGISTRY: 597612336131.dkr.ecr.ap-south-2.amazonaws.com
+  DOCKER_TAG: create-dockerfile-and-deploy-on-ecr
+  AWS_REGION: ap-south-2
+  APP_NAME: ticket99
+  ENVIRONMENT: staging
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+      
+      - name: debug
+        run: echo "Here is the env variable ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }}"
+        
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v1.1
+
+      - name: Setup NuGet
+        uses: NuGet/setup-nuget@v1.0.5
+
+      - name: Restore Packages
+        run: nuget restore Tickets99.sln
+
+      - name: Build app for release
+        run: |
+          msbuild Tickets99_API\Tickets99_API.csproj -t:rebuild -p:PublishUrl="PublishOutput\MvcApp" -p:DeployOnBuild=true -p:Configuration=Release 
+          New-Item -Path Tickets99_API\build -ItemType Directory -Force
+          Copy-Item -Path Tickets99_API\obj\Release\Package\PackageTmp\* -Destination Tickets99_API\build\ -Recurse
+     
+      - name: Define variables in environment
+        run: |
+          echo "SHORT_SHA=$("${{ github.sha }}".SubString(0, 8))" >> $env:GITHUB_ENV
+          echo "IMAGE_TAG=${{ github.ref_name }}-$("${{ github.sha }}".SubString(0, 8))" >> $env:GITHUB_ENV
+          
+      - name: Build docker image
+        run: |
+          cd Tickets99_API
+          docker build -f Dockerfile -t "${{ env.IMAGE_TAG }}" .
+          
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: "${{ env.AWS_REGION }}"
+
+      - name: Update config file
+        run: |
+          echo '{ "auths": { "https://index.docker.io/v1/": {} } }' > C:\Users\runneradmin\.docker\config.json
+          cat C:\Users\runneradmin\.docker\config.json 
+          
+      - name: Push the Image to AWS ECR Repo
+        run: |
+          echo "Docker Version: $(docker --version)"
+          echo "AWS CLI Version: $(aws --version)"
+          aws ecr get-login-password --region ap-south-2 | docker login --username AWS --password-stdin ${{ env.ECR_REGISTRY }}   
+          docker tag "${{ env.IMAGE_TAG }}:latest" "${{ env.ECR_REGISTRY }}/ticket99/ticket99-api:${{ env.IMAGE_TAG }}"
+          docker push "${{ env.ECR_REGISTRY }}/ticket99/ticket99-api:${{ env.IMAGE_TAG }}"
+ 
+  deploy:
+    needs: build
+    if: github.ref != 'refs/heads/master'
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Define variables in environment
+        run: |
+          echo "SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-8)" >> $GITHUB_ENV
+          echo "IMAGE_TAG=${{ github.ref_name }}-$(echo ${{ github.sha }} | cut -c1-8)" >> $GITHUB_ENV
+
+      - name: Set up AWS credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: "${{ env.AWS_REGION }}"
+
+      - name: Download task definition
+        run: |
+          aws ecs describe-task-definition --task-definition ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }}-api --query taskDefinition > task-definition.json
+          cat task-definition.json
+          
+      - name: Fill in the new image ID in the Amazon ECS task definition
+        id: task-def
+        uses: aws-actions/amazon-ecs-render-task-definition@v1
+        with:
+          task-definition: task-definition.json
+          container-name: ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }}-api-container
+          image: "${{ env.ECR_REGISTRY }}/ticket99/ticket99-api:${{env.IMAGE_TAG}}"
+
+      - name: Deploy Amazon ECS task definition
+        uses: aws-actions/amazon-ecs-deploy-task-definition@v1
+        with:
+          task-definition: "${{ steps.task-def.outputs.task-definition }}"
+          service: ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }}-api
+          cluster: ${{ env.APP_NAME }}-${{ env.ENVIRONMENT }}-api
+          wait-for-service-stability: true
